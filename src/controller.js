@@ -15,8 +15,9 @@ import {
   GridHelper,
   LoopOnce,
   Clock,
+  sRGBEncoding,
 } from "three"
-import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js"
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js"
 
 import { fov, near, far } from "./constants"
 
@@ -28,7 +29,9 @@ export class PreviewController {
 
     // setup three.js renderer
     this.renderer = new WebGLRenderer({ antialias: true, canvas: this.canvas })
+    this.renderer.setPixelRatio(window.devicePixelRatio)
     this.renderer.setSize(width, height)
+    this.renderer.outputEncoding = sRGBEncoding
 
     // setup three.js scene
     this.scene = new Scene()
@@ -46,69 +49,62 @@ export class PreviewController {
 
     // aux variables
     this._clock = new Clock()
-    this._mixers = []
-    this._actions = []
+    this._mixer = null
+    this._actions = {}
 
     // load models, animations, etc.
     this.addGroundAndLightings()
-    this.loadTimmyIdle().then(() => {})
+    this.loadCharacterIdle()
   }
 
   onWindowResize() {
-    const styles = window.getComputedStyle(this.canvas)
-    const width = styles.getPropertyValue("width")
-    const height = styles.getPropertyValue("height")
-
+    const { width, height } = this.canvas.getBoundingClientRect()
     this.camera.aspect = width / height
     this.camera.updateProjectionMatrix()
     this.renderer.setSize(width, height)
   }
 
-  async loadTimmyIdle() {
-    // initialize FBX loader
-    const loader = new FBXLoader()
-    loader.setPath("models/")
+  loadCharacterIdle() {
+    // load GLTF model
+    const loader = new GLTFLoader()
+    loader.load("models/RobotExpressive.glb", (gltf) => {
+      const model = gltf.scene
+      this.scene.add(model)
+      this._mixer = new AnimationMixer(model)
 
-    // load FBX model
-    const fbx = await loader.loadAsync("tpose-timmy.fbx")
-    fbx.scale.setScalar(0.025)
-    fbx.traverse((c) => (c.castShadow = true))
+      // setup timmy controls
+      this._controls = new BasicCharacterControls({
+        target: model,
+        camera: this.camera,
+      })
 
-    // setup timmy controls
-    this._timmy = fbx
-    this._controls = new BasicCharacterControls({
-      target: fbx,
-      camera: this.camera,
+      // load gltf animations
+      for (let i = 0; i < gltf.animations.length; i++) {
+        const clip = gltf.animations[i]
+        const action = this._mixer.clipAction(clip)
+        this._actions[clip.name] = action
+
+        if (clip.name !== "Idle") {
+          action.clampWhenFinished = true
+          action.loop = LoopOnce
+        }
+      }
+
+      // start playing idle action
+      this._activeAction = this._actions["Idle"]
+      this._activeAction.play()
     })
 
-    // load idle animation
-    const idle = await this.loadAnimation("anim-breathing-idle", true)
-    const jump = await this.loadAnimation("anim-jump")
-    const walk = await this.loadAnimation("anim-walking")
-    idle.play()
-
-    // add timmy to the scene
-    this.scene.add(fbx)
-  }
-
-  async loadAnimation(path, infiniteLoop = false) {
-    if (!path.endsWith(".fbx")) {
-      path = path + ".fbx"
-    }
-
-    const animLoader = new FBXLoader()
-    animLoader.setPath("models/")
-    const anim = await animLoader.loadAsync(path)
-    const mixer = new AnimationMixer(this._timmy)
-    this._mixers.push(mixer)
-    const action = mixer.clipAction(anim.animations[0])
-
-    if (!infiniteLoop) {
-      action.clampWhenFinished = true
-      action.loop = LoopOnce
-    }
-
-    return action
+    document.addEventListener(
+      "keydown",
+      (event) => {
+        if (event.key === " ") {
+          this._mixer.addEventListener("finished", () => this.restoreState)
+          this.fadeToAction("Jump", 0.2)
+        }
+      },
+      false
+    )
   }
 
   addGroundAndLightings() {
@@ -125,29 +121,48 @@ export class PreviewController {
     this.scene.add(grid)
 
     // add ambient light
-    const light1 = new AmbientLight(0x404040, 5)
+    const light1 = new AmbientLight(0x404040, 2.5)
     this.scene.add(light1)
 
     // add directional light
-    const light2 = new DirectionalLight(0xffffff, 2)
-    light2.position.set(500, 500, 500)
+    const light2 = new DirectionalLight(0xffffff)
+    light2.position.set(0, 20, 10)
     light2.castShadow = true
     this.scene.add(light2)
   }
 
-  render() {
-    requestAnimationFrame((t) => {
-      const dt = this._clock.getDelta()
-      if (this._mixers.length !== 0) {
-        this._mixers.map((m) => m.update(dt))
-      }
-      if (this._controls) {
-        this._controls.Update(dt)
-      }
+  restoreState() {
+    this._mixer.removeEventListener("finished", this.restoreState)
+    this.fadeToAction("idle", 0.2)
+  }
 
-      this.render()
-      this.renderer.render(this.scene, this.camera)
-    })
+  fadeToAction(name, duration) {
+    const previousAction = this._activeAction
+    this._activeAction = this._actions[name]
+
+    if (previousAction !== this._activeAction) {
+      previousAction.fadeOut(duration)
+    }
+
+    this._activeAction
+      .reset()
+      .setEffectiveTimeScale(1)
+      .setEffectiveWeight(1)
+      .fadeIn(duration)
+      .play()
+  }
+
+  render() {
+    const dt = this._clock.getDelta()
+    if (this._mixer !== null) {
+      this._mixer.update(dt)
+    }
+    if (this._controls) {
+      this._controls.Update(dt)
+    }
+
+    requestAnimationFrame(() => this.render())
+    this.renderer.render(this.scene, this.camera)
   }
 }
 
