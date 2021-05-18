@@ -2,11 +2,10 @@ import {
   Scene,
   PerspectiveCamera,
   WebGLRenderer,
-  AmbientLight,
+  HemisphereLight,
   DirectionalLight,
   AnimationMixer,
   Vector3,
-  Quaternion,
   Color,
   Fog,
   Mesh,
@@ -19,273 +18,152 @@ import {
 } from "three"
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js"
 
-import { fov, near, far } from "./constants"
+let container, clock, mixer, actions, activeAction, previousAction
+let camera, scene, renderer, model
 
-export class PreviewController {
-  constructor() {
-    // query canvas element and its width and height
-    this.canvas = document.getElementById("preview")
-    const { width, height } = this.canvas.getBoundingClientRect()
+const api = { state: "Idle" }
 
-    // setup three.js renderer
-    this.renderer = new WebGLRenderer({ antialias: true, canvas: this.canvas })
-    this.renderer.setPixelRatio(window.devicePixelRatio)
-    this.renderer.setSize(width, height)
-    this.renderer.outputEncoding = sRGBEncoding
+function init() {
+  container = document.getElementById("preview")
+  const { width, height } = container.getBoundingClientRect()
 
-    // setup three.js scene
-    this.scene = new Scene()
-    this.scene.background = new Color(0xe0e0e0)
-    this.scene.fog = new Fog(0xe0e0e0, 20, 100)
+  camera = new PerspectiveCamera(45, width / height, 0.25, 100)
+  camera.position.set(-5, 3, 10)
+  camera.lookAt(new Vector3(0, 2, 0))
 
-    // setup three.js camera
-    const aspectRatio = width / height
-    this.camera = new PerspectiveCamera(fov, aspectRatio, near, far)
-    this.camera.position.set(-5, 3, 10)
-    this.camera.lookAt(new Vector3(0, 2, 0))
+  scene = new Scene()
+  scene.background = new Color(0xe0e0e0)
+  scene.fog = new Fog(0xe0e0e0, 20, 100)
 
-    // react to window resize events
-    window.addEventListener("resize", () => this.onWindowResize(), false)
+  clock = new Clock()
 
-    // aux variables
-    this._clock = new Clock()
-    this._mixer = null
-    this._actions = {}
+  // lights
 
-    // load models, animations, etc.
-    this.addGroundAndLightings()
-    this.loadCharacterIdle()
-  }
+  const hemiLight = new HemisphereLight(0xffffff, 0x444444)
+  hemiLight.position.set(0, 20, 0)
+  scene.add(hemiLight)
 
-  onWindowResize() {
-    const { width, height } = this.canvas.getBoundingClientRect()
-    this.camera.aspect = width / height
-    this.camera.updateProjectionMatrix()
-    this.renderer.setSize(width, height)
-  }
+  const dirLight = new DirectionalLight(0xffffff)
+  dirLight.position.set(0, 20, 10)
+  scene.add(dirLight)
 
-  loadCharacterIdle() {
-    // load GLTF model
-    const loader = new GLTFLoader()
-    loader.load("models/RobotExpressive.glb", (gltf) => {
-      const model = gltf.scene
-      this.scene.add(model)
-      this._mixer = new AnimationMixer(model)
+  // ground
 
-      // setup timmy controls
-      this._controls = new BasicCharacterControls({
-        target: model,
-        camera: this.camera,
-      })
+  const mesh = new Mesh(
+    new PlaneGeometry(2000, 2000),
+    new MeshPhongMaterial({ color: 0x999999, depthWrite: false })
+  )
+  mesh.rotation.x = -Math.PI / 2
+  scene.add(mesh)
 
-      // load gltf animations
-      for (let i = 0; i < gltf.animations.length; i++) {
-        const clip = gltf.animations[i]
-        const action = this._mixer.clipAction(clip)
-        this._actions[clip.name] = action
+  const grid = new GridHelper(200, 40, 0x000000, 0x000000)
+  grid.material.opacity = 0.2
+  grid.material.transparent = true
+  scene.add(grid)
 
-        if (clip.name !== "Idle") {
-          action.clampWhenFinished = true
-          action.loop = LoopOnce
-        }
-      }
+  // model
 
-      // start playing idle action
-      this._activeAction = this._actions["Idle"]
-      this._activeAction.play()
-    })
+  const loader = new GLTFLoader()
+  loader.load(
+    "models/RobotExpressive.glb",
+    function (gltf) {
+      model = gltf.scene
+      scene.add(model)
 
-    document.addEventListener(
-      "keydown",
-      (event) => {
-        if (event.key === " ") {
-          this._mixer.addEventListener("finished", () => this.restoreState)
-          this.fadeToAction("Jump", 0.2)
-        }
-      },
-      false
-    )
-  }
-
-  addGroundAndLightings() {
-    const mesh = new Mesh(
-      new PlaneGeometry(2000, 2000),
-      new MeshPhongMaterial({ color: 0x999999, depthWrite: false })
-    )
-    mesh.rotation.x = -Math.PI / 2
-    this.scene.add(mesh)
-
-    const grid = new GridHelper(200, 40, 0x000000, 0x000000)
-    grid.material.opacity = 0.2
-    grid.material.transparent = true
-    this.scene.add(grid)
-
-    // add ambient light
-    const light1 = new AmbientLight(0x404040, 2.5)
-    this.scene.add(light1)
-
-    // add directional light
-    const light2 = new DirectionalLight(0xffffff)
-    light2.position.set(0, 20, 10)
-    light2.castShadow = true
-    this.scene.add(light2)
-  }
-
-  restoreState() {
-    this._mixer.removeEventListener("finished", this.restoreState)
-    this.fadeToAction("idle", 0.2)
-  }
-
-  fadeToAction(name, duration) {
-    const previousAction = this._activeAction
-    this._activeAction = this._actions[name]
-
-    if (previousAction !== this._activeAction) {
-      previousAction.fadeOut(duration)
+      createGUI(model, gltf.animations)
+    },
+    undefined,
+    function (e) {
+      console.error(e)
     }
+  )
 
-    this._activeAction
-      .reset()
-      .setEffectiveTimeScale(1)
-      .setEffectiveWeight(1)
-      .fadeIn(duration)
-      .play()
+  renderer = new WebGLRenderer({ antialias: true })
+  renderer.setPixelRatio(window.devicePixelRatio)
+  renderer.setSize(width, height)
+  renderer.outputEncoding = sRGBEncoding
+  container.appendChild(renderer.domElement)
+
+  window.addEventListener("resize", onWindowResize)
+}
+
+function createGUI(model, animations) {
+  const states = [
+    "Idle",
+    "Walking",
+    "Running",
+    "Dance",
+    "Death",
+    "Sitting",
+    "Standing",
+  ]
+  const emotes = ["Jump", "Yes", "No", "Wave", "Punch", "ThumbsUp"]
+
+  mixer = new AnimationMixer(model)
+  actions = {}
+
+  for (let i = 0; i < animations.length; i++) {
+    const clip = animations[i]
+    const action = mixer.clipAction(clip)
+    actions[clip.name] = action
+
+    if (emotes.indexOf(clip.name) >= 0 || states.indexOf(clip.name) >= 4) {
+      action.clampWhenFinished = true
+      action.loop = LoopOnce
+    }
   }
 
-  render() {
-    const dt = this._clock.getDelta()
-    if (this._mixer !== null) {
-      this._mixer.update(dt)
-    }
-    if (this._controls) {
-      this._controls.Update(dt)
-    }
+  activeAction = actions[api.state]
+  activeAction.play()
+}
 
-    requestAnimationFrame(() => this.render())
-    this.renderer.render(this.scene, this.camera)
+function restoreState() {
+  mixer.removeEventListener("finished", restoreState)
+  fadeToAction(api.state, 0.2)
+}
+
+function fadeToAction(name, duration) {
+  previousAction = activeAction
+  activeAction = actions[name]
+
+  if (previousAction !== activeAction) {
+    previousAction.fadeOut(duration)
+  }
+
+  activeAction
+    .reset()
+    .setEffectiveTimeScale(1)
+    .setEffectiveWeight(1)
+    .fadeIn(duration)
+    .play()
+}
+
+function onWindowResize() {
+  const { width, height } = container.getBoundingClientRect()
+  camera.aspect = width / height
+  camera.updateProjectionMatrix()
+  renderer.setSize(width, height)
+}
+
+//
+
+function animate() {
+  const dt = clock.getDelta()
+  if (mixer) mixer.update(dt)
+  requestAnimationFrame(animate)
+  renderer.render(scene, camera)
+}
+
+function syncEvents(actions) {
+  if (actions.length === 0) {
+    return
+  }
+
+  for (const { action, count } of actions) {
+    console.log({ action, count })
+    fadeToAction(action, 0.2)
+    mixer.addEventListener("finished", restoreState)
   }
 }
 
-class BasicCharacterControls {
-  constructor(params) {
-    this._Init(params)
-  }
-
-  _Init(params) {
-    this._params = params
-    this._move = {
-      forward: false,
-      backward: false,
-      left: false,
-      right: false,
-    }
-    this._decceleration = new Vector3(-0.0005, -0.0001, -5.0)
-    this._acceleration = new Vector3(1, 0.25, 50.0)
-    this._velocity = new Vector3(0, 0, 0)
-
-    document.addEventListener("keydown", (e) => this._onKeyDown(e), false)
-    document.addEventListener("keyup", (e) => this._onKeyUp(e), false)
-  }
-
-  _onKeyDown(event) {
-    switch (event.keyCode) {
-      case 87: // w
-        this._move.forward = true
-        break
-      case 65: // a
-        this._move.left = true
-        break
-      case 83: // s
-        this._move.backward = true
-        break
-      case 68: // d
-        this._move.right = true
-        break
-      case 38: // up
-      case 37: // left
-      case 40: // down
-      case 39: // right
-        break
-    }
-  }
-
-  _onKeyUp(event) {
-    switch (event.keyCode) {
-      case 87: // w
-        this._move.forward = false
-        break
-      case 65: // a
-        this._move.left = false
-        break
-      case 83: // s
-        this._move.backward = false
-        break
-      case 68: // d
-        this._move.right = false
-        break
-      case 38: // up
-      case 37: // left
-      case 40: // down
-      case 39: // right
-        break
-    }
-  }
-
-  Update(timeInSeconds) {
-    const velocity = this._velocity
-    const frameDecceleration = new Vector3(
-      velocity.x * this._decceleration.x,
-      velocity.y * this._decceleration.y,
-      velocity.z * this._decceleration.z
-    )
-    frameDecceleration.multiplyScalar(timeInSeconds)
-    frameDecceleration.z =
-      Math.sign(frameDecceleration.z) *
-      Math.min(Math.abs(frameDecceleration.z), Math.abs(velocity.z))
-
-    velocity.add(frameDecceleration)
-
-    const controlObject = this._params.target
-    const _Q = new Quaternion()
-    const _A = new Vector3()
-    const _R = controlObject.quaternion.clone()
-
-    if (this._move.forward) {
-      velocity.z += this._acceleration.z * timeInSeconds
-    }
-    if (this._move.backward) {
-      velocity.z -= this._acceleration.z * timeInSeconds
-    }
-    if (this._move.left) {
-      _A.set(0, 1, 0)
-      _Q.setFromAxisAngle(_A, Math.PI * timeInSeconds * this._acceleration.y)
-      _R.multiply(_Q)
-    }
-    if (this._move.right) {
-      _A.set(0, 1, 0)
-      _Q.setFromAxisAngle(_A, -Math.PI * timeInSeconds * this._acceleration.y)
-      _R.multiply(_Q)
-    }
-
-    controlObject.quaternion.copy(_R)
-
-    const oldPosition = new Vector3()
-    oldPosition.copy(controlObject.position)
-
-    const forward = new Vector3(0, 0, 1)
-    forward.applyQuaternion(controlObject.quaternion)
-    forward.normalize()
-
-    const sideways = new Vector3(1, 0, 0)
-    sideways.applyQuaternion(controlObject.quaternion)
-    sideways.normalize()
-
-    sideways.multiplyScalar(velocity.x * timeInSeconds)
-    forward.multiplyScalar(velocity.z * timeInSeconds)
-
-    controlObject.position.add(forward)
-    controlObject.position.add(sideways)
-
-    oldPosition.copy(controlObject.position)
-  }
-}
+export { init, animate, syncEvents }
