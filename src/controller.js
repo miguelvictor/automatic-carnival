@@ -159,10 +159,15 @@ function syncEvents(actions) {
     return
   }
 
+  let timingOffset = 0
   for (const { action, count } of actions) {
-    console.log({ action, count })
-    fadeToAction(action, 0.2)
-    mixer.addEventListener("finished", restoreState)
+    for (let i = 0; i < count; i++) {
+      setTimeout(() => {
+        fadeToAction(action, 0.2)
+        mixer.addEventListener("finished", restoreState)
+      }, 1000 * timingOffset)
+      timingOffset += 1
+    }
   }
 }
 

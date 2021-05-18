@@ -10,7 +10,7 @@ const funcToAnim = {
   thumbsup: "ThumbsUp",
 }
 
-function parseExpressionStatement(node) {
+function parseExpressionStatement(node, identifiers) {
   const validFunctions = Object.keys(funcToAnim)
   const { expression } = node
   const { callee, arguments: args } = expression
@@ -22,6 +22,9 @@ function parseExpressionStatement(node) {
       if (args[0].type === "Literal") {
         const value = args[0].value
         count = value > 0 ? value : 1
+      } else if (args[0].type === "Identifier") {
+        const name = args[0].name
+        count = identifiers.hasOwnProperty(name) ? identifiers[name] : 1
       }
     }
 
@@ -53,7 +56,7 @@ export function parseJs(src) {
         identifiers[key] = value
       }
     } else if (type === "ExpressionStatement") {
-      const result = parseExpressionStatement(node)
+      const result = parseExpressionStatement(node, identifiers)
       if (result !== null) {
         actions.push(result)
       }
@@ -81,6 +84,14 @@ export function parseJs(src) {
           shouldExecuteIfBlock = left === right
         } else if (test.operator === "!=" || test.operator === "!==") {
           shouldExecuteIfBlock = left !== right
+        } else if (test.operator === ">") {
+          shouldExecuteIfBlock = left > right
+        } else if (test.operator === ">=") {
+          shouldExecuteIfBlock = left >= right
+        } else if (test.operator === "<") {
+          shouldExecuteIfBlock = left < right
+        } else if (test.operator === "<=") {
+          shouldExecuteIfBlock = left <= right
         }
       }
 
@@ -88,15 +99,17 @@ export function parseJs(src) {
         const { consequent } = node
         if (consequent.type === "BlockStatement") {
           if (consequent.body.length !== 0) {
-            if (consequent.body[0].type === "ExpressionStatement") {
-              const result = parseExpressionStatement(consequent.body[0])
-              if (result !== null) {
-                actions.push(result)
+            for (const stmt of consequent.body) {
+              if (stmt.type === "ExpressionStatement") {
+                const result = parseExpressionStatement(stmt, identifiers)
+                if (result !== null) {
+                  actions.push(result)
+                }
               }
             }
           }
         } else if (consequent.type === "ExpressionStatement") {
-          const result = parseExpressionStatement(consequent)
+          const result = parseExpressionStatement(consequent, identifiers)
           if (result !== null) {
             actions.push(result)
           }
